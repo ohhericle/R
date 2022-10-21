@@ -1,0 +1,174 @@
+---
+title: "Evaluating the Effect of the Public Dislike Feature on Viewership"
+author: 'Qichen Liu, Eric Le, Jason Rudianto'
+output:
+  pdf_document
+header-includes:
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+```{r load packages and set options, include=FALSE}
+library(tidyverse) 
+library(stargazer)
+library(sandwich)
+library(lmtest)
+library(lubridate)
+
+theme_set(theme_bw())
+```
+
+
+```{r load data, message=FALSE, include=FALSE}
+youtube <- read.csv("US_youtube_trending_data.csv")
+category_info <- read.csv("US_category_id.csv")
+names(youtube) <- tolower(names(youtube))
+```
+
+```{r data wrangling, include=FALSE}
+youtube <- youtube %>%
+  mutate(
+    publishedat = as.Date(publishedat),
+    trending_date = as.Date(trending_date),
+    num.tags = lengths(strsplit(tags, split='|', fixed=T)),
+    if_dislike_public = trending_date < '2021-11-15',
+    ratings_disabled = ratings_disabled == 'TRUE'
+  ) %>%
+  inner_join(
+    category_info,
+    by = c('categoryid' = 'id'),
+    copy = FALSE
+  ) %>% 
+  select(
+    video_id, publication.date=publishedat, trending.date=trending_date,
+    view_count:dislikes, num.tags, if_dislike_public, ratings_disabled, category=snippet.title
+  )
+
+second_day <- youtube %>% filter(as.numeric(trending.date - publication.date) == 1)
+```
+
+## Introduction 
+
+Over the past decade, watching online videos has become widely popular due to the expansion of online video platforms. Many users have the experience of clicking a "dislike" button when finding a video offensive. YouTube introduced the dislike button in 2010. However, having such a feature has both pros and cons. On the one hand, it helps protect people from fake information and perilous videos, as a large number of social "dislikes" on a video might be interpreted as bad social proof and aid in its removal. On the other hand, the feature exposes creators to potential abuse and harms the platform ecosystem through "dislike attacks", in which assailants actively work to drive up the number of dislikes on a creator’s videos, according to Susan Wojcicki, CEO of YouTube.
+
+In November 2021, YouTube removed the public dislike number from all of its videos, quickly followed by widespread disagreement concerning the adverse effects of the shift. Nowadays, there are more than 37 million YouTube channels worldwide vying for viewers' attention. A decrease in user engagement with videos will definitely cause a significant loss of a creator’s revenue, which implies that YouTube's decision is somewhat unjustifiable. Thus, data-based approaches are required to resolve the dispute over the impact of the feature on user engagement.
+
+This study evaluates the effectiveness of having the public dislike number on the platform empirically, utilizing observations of the top trending YouTube videos each day as of August 2020. The data contains each video's category information as well as various metrics for user engagement, such as the quantity of views, comments, likes, and dislikes. Applying a set of regression models, we estimate the change of viewership on the second day for videos in each category when the dislike number is public.
+
+## Data and Methodology
+
+The data in this study comes from the YouTube Trending Video Dataset. It was collected and made publicly available by the YouTube API sourced from Kaggle. The dataset is a daily record of the top trending YouTube videos, so each unit of observation represents a single trending video recorded from August 2020 to July 2022 with its associated metadata and metrics.
+
+According to the data dictionary, the publication date variable indicates when a video is originally published, while the trending date represents the time when a video is recorded as an observation. The difference between these two dates can be regarded as the age of a video and we split the data into several groups by looking at the age. Because we planned to investigate the viewership on the second day, we filtered out `r nrow(youtube) - nrow(second_day)` observations the age of which is larger than one and used the remaining `r nrow(second_day) / nrow(youtube) * 100 %>% round(1)`\%, totaling `r nrow(second_day)` rows, to generate the statistics in this report. All exploration and model building were performed on the subsample that was filtered out.
+
+```{r filter data, include=FALSE}
+num_duplicated <- sum(duplicated(second_day[,c('video_id')]))
+frac_duplicated <- num_duplicated / nrow(second_day)
+num_invalid <- sum(second_day$trending.date >= '2021-11-01' & second_day$publication.date <= '2021-11-30')
+num_outlier <- sum(second_day$view_count > 3*10**7)
+
+second_day <- second_day %>% 
+  filter(
+    !duplicated(second_day[, c('video_id')], fromLast=T),
+    trending.date < '2021-11-01' | publication.date > '2021-11-30',
+    view_count <= 3*10**7
+  ) %>% 
+  mutate(
+    ratio.of.dislike = dislikes / (dislikes + likes) * if_dislike_public
+  )
+
+
+```
+
+Given the practice in the industry, viewership is the most widely used metric of user engagement. To operationalize viewership, we use the view count as our outcome variable. Meanwhile, we analyze the tag information to count the number of tags and use it as an explanatory variable, but the main variable that we focus on is the indicator for public dislike feature. Because we don't know the exact date when YouTube removed the dislike number, a video that was active in November 2021 is likely to be published with the public dislike number but recorded without, and thus is not a valid observation following a definite pattern (with or without the feature). We therefore filter out `r num_invalid` videos of which the trending date is later than November 1 and the publication date is earlier than November 30. There are also `r num_duplicated` duplicated videos in our data, which take up `r frac_duplicated * 100 %>% round(2)`\%, as some videos are repeatedly displayed as trending videos on the same date. Finally, we remove `r num_outlier` outliers whose view count is larger than $3\cdot 10^7$, leaving `r nrow(second_day)` observations. Additionally, we include a fixed effect for each category that is interacted with
+
+
+
+
+
+```{r figure_1, echo=FALSE, message=FALSE, fig.cap = "Video Viewership as a Function of Age", fig.height = 3, fig.width = 5}
+second_day %>% mutate(if_dislike_public = case_when(
+  if_dislike_public ~ "With Public Dislike Number",
+  T ~ "Without Public Dislike Number"
+)) %>% 
+  ggplot(aes(y = view_count, x = num.tags, colour = if_dislike_public)) + geom_point() +
+  geom_smooth(se=FALSE) +  xlab('number of tags') + ylab('view count') +
+  theme(legend.title=element_blank(), legend.position = c(0.8, 0.84))
+```
+
+I am interested in the difference in value between two counterfactuals: one in which a house is remodeled, and another in which it is not. There are two key factors that might affect this increase in value:
+
+- The age of the house when remodeled. It is possible that remodeling an older home results in a larger value increase than remodeling a newer home.
+- The time between the remodel and the sale. It is possible that remodels become more or less valuable over time, and the rate of change may be different than that of houses in general.
+
+Exploratory plots suggest that both effects exist and that both are roughly linear. I therefore create regression models in which the "boost" from remodeling increases by a fixed amount with the age of the house when remodeled, and also changes by another fixed amount with each year that passes after the remodel. In other words, I fit regressions of the form,
+$$\widehat{view\ count}=\beta_0 + \beta_1\cdot D + \mathbf{I}\beta_I + D \cdot\mathbf{I}\beta_D + \mathbf{Z\gamma}$$
+where $D$ is an indicator for remodeling, $\beta_1$ represents the immediate increase in value per year the house existed before remodeling, $\beta_2$ represents the change in the value increase for each year that passes after the remodel, $\mathbf{Z}$ is a row vector of additional covariates, and $\mathbf{\gamma}$ is a column vector of coefficients.
+
+Using the raw data where each row represents a single video, we generate a new table where each row (observation) represents aggregated information for a single day. Since we also intend to obtain the distribution of video categories per trending date, we first one-hot-encode the video categories' individual columns. After setting up these one-hot columns, we proceed to group the data by the trending date and get the total amount of viewership among the videos and the number of videos in each category found in that day’s trending videos.
+
+I considered specifications that also include the modeling indicator $R$ by itself (i.e. uninteracted). This type of model allows for the possibility that even a brand new house that is remodeled immediately increases in value. However, when fitting such models in the exploration set, the resulting coefficient was practically small (equivalent to reducing the age of a home by 1 to 2 years) and non-significant. To improve the precision of my estimates and the simplicity of the model, I removed this term.
+
+
+## Results
+
+```{r fit models, include=FALSE}
+m_minimal <- second_day %>%
+  lm(view_count ~ as.numeric(if_dislike_public), data = .)
+se_minimal <- m_minimal %>% vcovHC(type = "HC1") %>% diag() %>% sqrt()
+
+m_central <- second_day %>%
+  lm(view_count ~ as.numeric(if_dislike_public) * category + ratio.of.dislike, data = .)
+se_central <- m_central %>% vcovHC(type = "HC1") %>% diag() %>% sqrt()
+
+m_verbose <- second_day %>%
+  lm(view_count ~ as.numeric(if_dislike_public) * category + ratio.of.dislike + log(num.tags), data = .)
+se_verbose <- m_verbose %>% vcovHC(type = "HC1") %>% diag() %>% sqrt()
+```
+
+
+```{r display regression table, message=FALSE, echo=FALSE, results='asis'}
+stargazer(m_minimal, m_central, m_verbose, type = 'latex', 
+          se = list(se_minimal, se_central, se_verbose),
+          omit = c("entertainment", "film_animation", "autos_vehicles", "pets_animals", "sports",
+                   "travel_events", "gaming", "people_blogs", "howto_style"),
+          header=FALSE,
+          title = "Estimated Regressions",
+          dep.var.caption  = "Output Variable: total views",
+          dep.var.labels   = "",
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          # covariate.labels = c("dislike button indicator", "number of music videos",
+          #                      "number of comedy videos", "number of news/politics videos",
+          #                      "number of education videos", "constant"),
+          # add.lines = list(
+          #   c("number of entertainment videos", "", "\\checkmark","\\checkmark"),
+          #   c("number of sports videos", "", "\\checkmark", "\\checkmark"),
+          #   c("number of gaming videos", "", "\\checkmark","\\checkmark"),
+          #   c("additional features", "", "","\\checkmark"),
+          #   "\\hline"
+          # ), 
+          omit.stat=c("adj.rsq","f"), digits=2,
+          notes = "\\parbox[t]{.55\\textwidth}{$HC_1$ robust standard errors in parentheses.\\\\Additional features are number of film/animation videos, people/blogs videos, travel/events videos, howto/style videos, autos/vehicles videos, and pets/animals videos.}", notes.align='l'
+)
+```
+
+
+## Limitations
+
+Consistent regression estimates require an assumption of independent and identically distributed (iid) observations. Because homes exist in a geography, there is a possibility of geographical clustering. I partly account for this possibility in models 2 and 3, by including a fixed effect for each neighborhood that is interacted with year sold. In other words, each neighborhood has a unique slope and linear trend over time. I am not able to account for geographical clustering within each neighborhood.
+
+Because house sales take place over time, there is a further possibility of temporal autocorrelation. Real estate professionals often use past sale prices to help value current properties, so a high sale price at one time may increase the probability of high sale prices at future dates.
+
+Consistent regression estimates also require that the population distribution is described by a unique best linear predictor. Supporting this assumption, I do not see any visual evidence of heavy tailed distributions in any diagnostic plot. Variables are automatically dropped to avoid perfect collinearity.
+
+As far as structural limitations, several omitted variables may bias my estimates. In a classic omitted variables framework, the omitted variable is assumed not to interact with the key variable in the true model. An example of a variable for which this assumption is plausible is uneven floors. If uneven floors make it more difficult to perform a remodel, I expect a negative correlation between uneven floors and my key variables. Since uneven floors are likely to have a negative effect on price in the true model, I predict a positive omitted variable bias on the key variables. The main effect is therefore being driven away from zero, making my hypothesis tests overconfident. A similar analysis holds for unusual room dimensions and exposure to earthquakes.
+
+The standard textbook analysis must be modified when a remodel is performed to correct a problem with a house. For an example, consider homes containing toxic materials. While the presence of toxic materials may cause a remodel, it is also an outcome variable. That is, remodeling may cause toxic materials to decrease. In the extreme case, all homes with toxic materials become remodeled, such that no toxic materials remain in the data. The positive benefits of removing toxic materials then become impossible to measure. As a result, I expect a remodel to appear less valuable than it really is. The main effect is therefore being driven towards zero, suggesting that my hypothesis tests are underconfident. A similar analysis holds for problems like unfashionable cabinets, mold, and pet damage.
+
+## Conclusion
+
+
+
+ 
+
